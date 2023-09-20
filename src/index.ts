@@ -300,6 +300,9 @@ function outputBlock(out: Uint8Array, oo: number, x0: number, x1: number, x2: nu
 }
 
 export function encrypt(plain: Uint8Array, io: number, cipher: Uint8Array, oo: number, [sBox, sKey]: Session) {
+  if (cipher.length < oo+16) {
+    throw new Error("Insufficient space to write ciphertext block.");
+  }
   let x0 = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24) ^ sKey[0];
   let x1 = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24) ^ sKey[1];
   let x2 = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24) ^ sKey[2];
@@ -348,6 +351,12 @@ export function encrypt(plain: Uint8Array, io: number, cipher: Uint8Array, oo: n
 }
 
 export function decrypt(cipher: Uint8Array, io: number, plain: Uint8Array, oo: number, [sBox, sKey]: Session) {
+  if (cipher.length < io+16) {
+    throw new Error("Incomplete ciphertext block.");
+  }
+  if (plain.length < oo+16) {
+    throw new Error("Insufficient space to write plaintext block.");
+  }
   let x2 = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24) ^ sKey[4];
   let x3 = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24) ^ sKey[5];
   let x0 = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24) ^ sKey[6];

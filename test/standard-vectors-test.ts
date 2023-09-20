@@ -19,16 +19,26 @@ function toHex(buf: Uint8Array) {
   }).join('').toUpperCase();
 }
 
+const cbuf = new Uint8Array(16);
+const obuf = new Uint8Array(16);
+
 for (const { keysize, tests } of vectors) {
   describe(`Keysize=${keysize}`, () => {
     for (const { key, pt, ct } of tests) {
-      it(`Should roundtrip ${pt} with key ${key}`, () => {
-        const skey = makeSession(fromHex(key));
-        const buf = fromHex(pt);
+      const skey = makeSession(fromHex(key));
+      const buf = fromHex(pt);
+      it(`Should roundtrip ${pt} with key ${key} in a single buffer`, () => {
         encrypt(buf, 0, buf, 0, skey);
         expect(toHex(buf)).to.eql(ct);
         decrypt(buf, 0, buf, 0, skey);
         expect(toHex(buf)).to.eql(pt);
+      });
+  
+      it(`Should roundtrip ${pt} with key ${key} in multiple buffers`, () => {
+        encrypt(buf, 0, cbuf, 0, skey);
+        expect(toHex(cbuf)).to.eql(ct);
+        decrypt(cbuf, 0, obuf, 0, skey);
+        expect(toHex(obuf)).to.eql(pt);
       });
     }
   });
