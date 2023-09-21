@@ -1,6 +1,6 @@
 {
   "name": "twofish-ts",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "TypeScript implementation of Twofish encryption.",
   "main": "bin/index.js",
   "files": [
