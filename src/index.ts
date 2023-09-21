@@ -1,3 +1,5 @@
+import modulep from './wasm';
+
 const P0 = new Uint8Array([
   0xA9, 0x67, 0xB3, 0xE8, 0x04, 0xFD, 0xA3, 0x76, 0x9A, 0x92, 0x80, 0x78, 0xE4, 0xDD, 0xD1, 0x38,
   0x0D, 0xC6, 0x35, 0x98, 0x18, 0xF7, 0xEC, 0x6C, 0x43, 0x75, 0x37, 0x26, 0xFA, 0x13, 0x94, 0x48,
@@ -133,12 +135,8 @@ const MDS3 = new Uint32Array([
   0xECC94AEC,0xFDD25EFD,0xAB7FC1AB,0xD8A8E0D8,
 ]);
 
-export type Session = Uint32Array;
-
-const ROUNDS = 16;
 const SK_STEP = 0x01010101;
 const SK_ROTL = 9;
-const ROUND_SUBKEYS = 8;
 const SUBKEY_CNT = 40;
 const RS_GF_FDBK = 0x14D;
 
@@ -206,78 +204,6 @@ function getSubKeyWord(
   }
 }
 
-export function makeSession(key: Uint8Array): Session {
-  let keyLength = key.length;
-  if (keyLength > 32) {
-    key = key.subarray(0, 32);
-  } else {
-    const mod = keyLength & 7;
-    if (keyLength === 0 || mod !== 0) {
-      keyLength += 8 - mod;
-      const nkey = new Uint8Array(keyLength);
-      nkey.set(key);
-      key = nkey; 
-    }
-  }
-
-  const k64Cnt = keyLength / 8;
-  const s = new Uint32Array(1024+40+4); //  sBox + subKeys + x0...x3
-
-  let offset = 0;
-
-  let k0 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
-  let k1 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
-  s[k64Cnt - 1] = rsMDSEncode(k0, k1);
-
-  let k2 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
-  let k3 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
-  s[k64Cnt - 2] = rsMDSEncode(k2, k3);
-
-  const k4 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
-  const k5 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
-  s[k64Cnt - 3] = rsMDSEncode(k4, k5);
-
-  const k6 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
-  const k7 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
-  s[k64Cnt - 4] = rsMDSEncode(k6, k7);
-
-  let A: number;
-  let B: number;
-  for (let i = 0, q = 0, j = 1024; i < SUBKEY_CNT / 2; i++, j += 2) {
-    getSubKeyWord(k64Cnt, k0, k2, k4, k6, b0(q), b1(q), b2(q), b3(q));
-    A = subKeyWord[0] ^ subKeyWord[1] ^ subKeyWord[2] ^ subKeyWord[3];
-    q += SK_STEP;
-
-    getSubKeyWord(k64Cnt, k1, k3, k5, k7, b0(q), b1(q), b2(q), b3(q));
-    B = subKeyWord[0] ^ subKeyWord[1] ^ subKeyWord[2] ^ subKeyWord[3];
-    q += SK_STEP;
-
-    B = B << 8 | B >>> 24;
-    
-    A += B;
-    s[j] = A;
-    
-    A += B;
-    s[j + 1] = A << SK_ROTL | A >>> 32 - SK_ROTL;
-  }
-
-  k0 = s[0];
-  k1 = s[1];
-  k2 = s[2];
-  k3 = s[3];
-  
-  for (let i = 0, j = 0; i < 256; i++, j += 2) {
-    getSubKeyWord(k64Cnt, k0, k1, k2, k3, i, i, i, i);
-   
-    s[j] =         subKeyWord[0];
-    s[j + 1] =     subKeyWord[1];
-    s[0x200 + j] = subKeyWord[2];
-    s[0x201 + j] = subKeyWord[3];
-  }
-
-  return s;
-}
-
 function outputBlock(out: Uint8Array, oo: number, x0: number, x1: number, x2: number, x3: number) {
   out[oo++] = x0;
   out[oo++] = x0 >>> 8;
@@ -297,115 +223,122 @@ function outputBlock(out: Uint8Array, oo: number, x0: number, x1: number, x2: nu
   out[oo++] = x3 >>> 24;
 }
 
-export function encrypt(plain: Uint8Array, io: number, cipher: Uint8Array, oo: number, s: Session) {
-  if (cipher.length < oo+16) {
-    throw new Error("Insufficient space to write ciphertext block.");
+export class TwoFish {
+  private constructor(
+    private sBox: Uint32Array, private subKeys: Uint32Array, private x: Uint32Array,
+    private _encrypt: () => void, private _decrypt: () => void) {}
+
+  public static async init(key: Uint8Array): Promise<TwoFish> {
+    const wasm = (await WebAssembly.instantiate(await modulep) as unknown as WebAssembly.Instance).exports;
+    const membuf = (wasm.memory as WebAssembly.Memory).buffer;
+    const tf = new TwoFish(
+      new Uint32Array(membuf, 0, 1024), new Uint32Array(membuf, 4096, 40), new Uint32Array(membuf, 4256, 4),
+      wasm.encrypt as () => void, wasm.decrypt as () => void,
+    );
+    return tf.reset(key);
   }
-  s[1064] = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24);
-  s[1065] = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24);
-  s[1066] = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24);
-  s[1067] = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24);
 
-  s[1064] = s[1064] ^ s[1024];
-  s[1065] = s[1065] ^ s[1025];
-  s[1066] = s[1066] ^ s[1026];
-  s[1067] = s[1067] ^ s[1027];
+  public reset(key: Uint8Array): this {
+    let keyLength = key.length;
+    if (keyLength > 32) {
+      key = key.subarray(0, 32);
+    } else {
+      const mod = keyLength & 7;
+      if (keyLength === 0 || mod !== 0) {
+        keyLength += 8 - mod;
+        const nkey = new Uint8Array(keyLength);
+        nkey.set(key);
+        key = nkey; 
+      }
+    }
 
-  let t0: number;
-  let t1: number;
-  let k = ROUND_SUBKEYS + 1024;
-  for (let R = 0; R < ROUNDS; R += 2) {
-    t0 = s[s[1064] << 1 & 0x1FE] ^
-         s[(s[1064] >>> 7 & 0x1FE) + 1] ^
-         s[0x200 + (s[1064] >>> 15 & 0x1FE)] ^
-         s[0x200 + (s[1064] >>> 23 & 0x1FE) + 1];
-    t1 = s[s[1065] >>> 23 & 0x1FE] ^
-         s[(s[1065] << 1 & 0x1FE) + 1] ^
-         s[0x200 + (s[1065] >>> 7 & 0x1FE)] ^
-         s[0x200 + (s[1065] >>> 15 & 0x1FE) + 1];
+    const k64Cnt = keyLength / 8;
+    let offset = 0;
+
+    const { sBox, subKeys } = this;
+
+    let k0 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
+    let k1 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
+    sBox[k64Cnt - 1] = rsMDSEncode(k0, k1);
+
+    let k2 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
+    let k3 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
+    sBox[k64Cnt - 2] = rsMDSEncode(k2, k3);
+
+    const k4 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
+    const k5 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
+    sBox[k64Cnt - 3] = rsMDSEncode(k4, k5);
+
+    const k6 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
+    const k7 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
+    sBox[k64Cnt - 4] = rsMDSEncode(k6, k7);
+
+    let A: number;
+    let B: number;
+    for (let i = 0, q = 0, j = 0; i < SUBKEY_CNT / 2; i++, j += 2) {
+      getSubKeyWord(k64Cnt, k0, k2, k4, k6, b0(q), b1(q), b2(q), b3(q));
+      A = subKeyWord[0] ^ subKeyWord[1] ^ subKeyWord[2] ^ subKeyWord[3];
+      q += SK_STEP;
+
+      getSubKeyWord(k64Cnt, k1, k3, k5, k7, b0(q), b1(q), b2(q), b3(q));
+      B = subKeyWord[0] ^ subKeyWord[1] ^ subKeyWord[2] ^ subKeyWord[3];
+      q += SK_STEP;
+
+      B = B << 8 | B >>> 24;
+      
+      A += B;
+      subKeys[j] = A;
+      
+      A += B;
+      subKeys[j + 1] = A << SK_ROTL | A >>> 32 - SK_ROTL;
+    }
+
+    k0 = sBox[0];
+    k1 = sBox[1];
+    k2 = sBox[2];
+    k3 = sBox[3];
     
-    s[1066] ^= t0 + t1 + s[k++];
-    s[1066] = s[1066] >>> 1 | s[1066] << 31;
-    s[1067] = s[1067] << 1 | s[1067] >>> 31;
-    s[1067] ^= t0 + 2 * t1 + s[k++];
-
-    t0 = s[s[1066] << 1 & 0x1FE] ^
-         s[(s[1066] >>> 7 & 0x1FE) + 1] ^
-         s[0x200 + (s[1066] >>> 15 & 0x1FE)] ^
-         s[0x200 + (s[1066] >>> 23 & 0x1FE) + 1];
-    t1 = s[s[1067] >>> 23 & 0x1FE] ^
-         s[(s[1067] << 1 & 0x1FE) + 1] ^
-         s[0x200 + (s[1067] >>> 7 & 0x1FE)] ^
-         s[0x200 + (s[1067] >>> 15 & 0x1FE) + 1];
-
-    s[1064] ^= t0 + t1 + s[k++];
-    s[1064] = s[1064] >>> 1 | s[1064] << 31;
-    s[1065] = s[1065] << 1 | s[1065] >>> 31;
-    s[1065] ^= t0 + 2 * t1 + s[k++];
-  }
-
-  s[1066] = s[1066] ^ s[1028];
-  s[1067] = s[1067] ^ s[1029];
-  s[1064] = s[1064] ^ s[1030];
-  s[1065] = s[1065] ^ s[1031];
-
-  outputBlock(cipher, oo, s[1066], s[1067], s[1064], s[1065]);
-}
-
-export function decrypt(cipher: Uint8Array, io: number, plain: Uint8Array, oo: number, s: Session) {
-  if (cipher.length < io+16) {
-    throw new Error("Incomplete ciphertext block.");
-  }
-  if (plain.length < oo+16) {
-    throw new Error("Insufficient space to write plaintext block.");
-  }
-  s[1066] = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24);
-  s[1067] = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24);
-  s[1064] = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24);
-  s[1065] = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24);
-
-  s[1066] = s[1066] ^ s[1028];
-  s[1067] = s[1067] ^ s[1029];
-  s[1064] = s[1064] ^ s[1030];
-  s[1065] = s[1065] ^ s[1031];
-
-  let t0: number;
-  let t1: number;
-  let k = ROUND_SUBKEYS + 1024 + 2 * ROUNDS - 1;  
-  for (let R = 0; R < ROUNDS; R += 2) {
-    t0 = s[s[1066] << 1 & 0x1FE] ^
-         s[(s[1066] >>> 7 & 0x1FE) + 1] ^
-         s[0x200 + (s[1066] >>> 15 & 0x1FE)] ^
-         s[0x200 + (s[1066] >>> 23 & 0x1FE) + 1];
-    t1 = s[s[1067] >>> 23 & 0x1FE] ^
-         s[(s[1067] << 1 & 0x1FE) + 1] ^
-         s[0x200 + (s[1067] >>> 7 & 0x1FE)] ^
-         s[0x200 + (s[1067] >>> 15 & 0x1FE) + 1];
+    for (let i = 0, j = 0; i < 256; i++, j += 2) {
+      getSubKeyWord(k64Cnt, k0, k1, k2, k3, i, i, i, i);
     
-    s[1065] ^= t0 + 2 * t1 + s[k--];
-    s[1065] = s[1065] >>> 1 | s[1065] << 31;
-    s[1064] = s[1064] << 1 | s[1064] >>> 31;
-    s[1064] ^= t0 + t1 + s[k--];
+      sBox[j] =         subKeyWord[0];
+      sBox[j + 1] =     subKeyWord[1];
+      sBox[0x200 + j] = subKeyWord[2];
+      sBox[0x201 + j] = subKeyWord[3];
+    }
 
-    t0 = s[s[1064] << 1 & 0x1FE] ^
-         s[(s[1064] >>> 7 & 0x1FE) + 1] ^
-         s[0x200 + (s[1064] >>> 15 & 0x1FE)] ^
-         s[0x200 + (s[1064] >>> 23 & 0x1FE) + 1];
-    t1 = s[s[1065] >>> 23 & 0x1FE] ^
-         s[(s[1065] << 1 & 0x1FE) + 1] ^
-         s[0x200 + (s[1065] >>> 7 & 0x1FE)] ^
-         s[0x200 + (s[1065] >>> 15 & 0x1FE) + 1];
-
-    s[1067] ^= t0 + 2 * t1 + s[k--];
-    s[1067] = s[1067] >>> 1 | s[1067] << 31;
-    s[1066] = s[1066] << 1 | s[1066] >>> 31;
-    s[1066] ^= t0 + t1 + s[k--];
+    return this;
   }
 
-  s[1064] = s[1064] ^ s[1024];
-  s[1065] = s[1065] ^ s[1025];
-  s[1066] = s[1066] ^ s[1026];
-  s[1067] = s[1067] ^ s[1027];
+  public encrypt(plain: Uint8Array, io: number, cipher: Uint8Array, oo: number) {
+    if (cipher.length < oo+16) {
+      throw new Error("Insufficient space to write ciphertext block.");
+    }
+    const { x } = this;
+    x[0] = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24);
+    x[1] = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24);
+    x[2] = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24);
+    x[3] = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24);
 
-  outputBlock(plain, oo, s[1064], s[1065], s[1066], s[1067]);
+    this._encrypt();
+    outputBlock(cipher, oo, x[2], x[3], x[0], x[1]);
+  }
+
+  public decrypt(cipher: Uint8Array, io: number, plain: Uint8Array, oo: number) {
+    if (cipher.length < io+16) {
+      throw new Error("Incomplete ciphertext block.");
+    }
+    if (plain.length < oo+16) {
+      throw new Error("Insufficient space to write plaintext block.");
+    }
+    const { x } = this;
+    x[2] = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24);
+    x[3] = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24);
+    x[0] = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24);
+    x[1] = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24);
+
+    this._decrypt();
+
+    outputBlock(plain, oo, x[0], x[1], x[2], x[3]);
+  }
 }

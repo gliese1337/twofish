@@ -1,6 +1,6 @@
 import 'mocha';
 import { expect } from 'chai';
-import { makeSession, encrypt, decrypt } from '../src';
+import { TwoFish } from '../src';
 import vectors from './testvectors';
 
 function fromHex(str: string) {
@@ -25,19 +25,20 @@ const obuf = new Uint8Array(16);
 for (const { keysize, tests } of vectors) {
   describe(`Keysize=${keysize}`, () => {
     for (const { key, pt, ct } of tests) {
-      const skey = makeSession(fromHex(key));
       const buf = fromHex(pt);
-      it(`Should roundtrip ${pt} with key ${key} in a single buffer`, () => {
-        encrypt(buf, 0, buf, 0, skey);
+      it(`Should roundtrip ${pt} with key ${key} in a single buffer`, async () => {
+        const skey = await TwoFish.init(fromHex(key));
+        skey.encrypt(buf, 0, buf, 0);
         expect(toHex(buf)).to.eql(ct);
-        decrypt(buf, 0, buf, 0, skey);
+        skey.decrypt(buf, 0, buf, 0);
         expect(toHex(buf)).to.eql(pt);
       });
   
-      it(`Should roundtrip ${pt} with key ${key} in multiple buffers`, () => {
-        encrypt(buf, 0, cbuf, 0, skey);
+      it(`Should roundtrip ${pt} with key ${key} in multiple buffers`, async () => {
+        const skey = await TwoFish.init(fromHex(key));
+        skey.encrypt(buf, 0, cbuf, 0);
         expect(toHex(cbuf)).to.eql(ct);
-        decrypt(cbuf, 0, obuf, 0, skey);
+        skey.decrypt(cbuf, 0, obuf, 0);
         expect(toHex(obuf)).to.eql(pt);
       });
     }

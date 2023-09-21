@@ -8,11 +8,11 @@
     "bin/index.d.ts"
   ],
   "scripts": {
-    "build": "tsc",
     "test": "mocha -r ts-node/register test/**/*-test.ts",
+    "build": "ts-node build_wasm.ts && tsc",
     "lint": "eslint . --ext .ts --fix",
     "minify": "jsmin -o bin/index.min.js bin/index.js && del bin\\index.js && move bin\\index.min.js bin\\index.js",
-    "prepare": "tsc && npm run minify && npm test"
+    "prepare": "npm run build && npm run minify"
   },
   "keywords": [
     "twofish",
@@ -42,5 +42,9 @@
   "bugs": {
     "url": "https://github.com/gliese1337/twofish/issues"
   },
-  "homepage": "https://github.com/gliese1337/twofish#readme"
+  "homepage": "https://github.com/gliese1337/twofish#readme",
+  "dependencies": {
+    "@types/node": "^20.6.3",
+    "wabt": "^1.0.32"
+  }
 }
