@@ -133,7 +133,7 @@ const MDS3 = new Uint32Array([
   0xECC94AEC,0xFDD25EFD,0xAB7FC1AB,0xD8A8E0D8,
 ]);
 
-export type Session = [Uint32Array, Uint32Array];
+export type Session = Uint32Array;
 
 const ROUNDS = 16;
 const SK_STEP = 0x01010101;
@@ -221,31 +221,29 @@ export function makeSession(key: Uint8Array): Session {
   }
 
   const k64Cnt = keyLength / 8;
-  const sessionMemory = new ArrayBuffer(4256);
-  const sBox = new Uint32Array(sessionMemory, 0, 1024);
+  const s = new Uint32Array(1024+40+4); //  sBox + subKeys + x0...x3
 
   let offset = 0;
 
   let k0 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
   let k1 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
-  sBox[k64Cnt - 1] = rsMDSEncode(k0, k1);
+  s[k64Cnt - 1] = rsMDSEncode(k0, k1);
 
   let k2 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
   let k3 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
-  sBox[k64Cnt - 2] = rsMDSEncode(k2, k3);
+  s[k64Cnt - 2] = rsMDSEncode(k2, k3);
 
   const k4 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
   const k5 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
-  sBox[k64Cnt - 3] = rsMDSEncode(k4, k5);
+  s[k64Cnt - 3] = rsMDSEncode(k4, k5);
 
   const k6 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
   const k7 = key[offset++] | key[offset++] << 8 | key[offset++] << 16 | key[offset++] << 24;
-  sBox[k64Cnt - 4] = rsMDSEncode(k6, k7);
+  s[k64Cnt - 4] = rsMDSEncode(k6, k7);
 
   let A: number;
   let B: number;
-  const subKeys = new Uint32Array(sessionMemory, 4096, 40);
-  for (let i = 0, q = 0, j = 0; i < SUBKEY_CNT / 2; i++, j += 2) {
+  for (let i = 0, q = 0, j = 1024; i < SUBKEY_CNT / 2; i++, j += 2) {
     getSubKeyWord(k64Cnt, k0, k2, k4, k6, b0(q), b1(q), b2(q), b3(q));
     A = subKeyWord[0] ^ subKeyWord[1] ^ subKeyWord[2] ^ subKeyWord[3];
     q += SK_STEP;
@@ -257,27 +255,27 @@ export function makeSession(key: Uint8Array): Session {
     B = B << 8 | B >>> 24;
     
     A += B;
-    subKeys[j] = A;
+    s[j] = A;
     
     A += B;
-    subKeys[j + 1] = A << SK_ROTL | A >>> 32 - SK_ROTL;
+    s[j + 1] = A << SK_ROTL | A >>> 32 - SK_ROTL;
   }
 
-  k0 = sBox[0];
-  k1 = sBox[1];
-  k2 = sBox[2];
-  k3 = sBox[3];
+  k0 = s[0];
+  k1 = s[1];
+  k2 = s[2];
+  k3 = s[3];
   
   for (let i = 0, j = 0; i < 256; i++, j += 2) {
     getSubKeyWord(k64Cnt, k0, k1, k2, k3, i, i, i, i);
    
-    sBox[j] =         subKeyWord[0];
-    sBox[j + 1] =     subKeyWord[1];
-    sBox[0x200 + j] = subKeyWord[2];
-    sBox[0x201 + j] = subKeyWord[3];
+    s[j] =         subKeyWord[0];
+    s[j + 1] =     subKeyWord[1];
+    s[0x200 + j] = subKeyWord[2];
+    s[0x201 + j] = subKeyWord[3];
   }
 
-  return [sBox, subKeys];
+  return s;
 }
 
 function outputBlock(out: Uint8Array, oo: number, x0: number, x1: number, x2: number, x3: number) {
@@ -299,107 +297,115 @@ function outputBlock(out: Uint8Array, oo: number, x0: number, x1: number, x2: nu
   out[oo++] = x3 >>> 24;
 }
 
-export function encrypt(plain: Uint8Array, io: number, cipher: Uint8Array, oo: number, [sBox, sKey]: Session) {
+export function encrypt(plain: Uint8Array, io: number, cipher: Uint8Array, oo: number, s: Session) {
   if (cipher.length < oo+16) {
     throw new Error("Insufficient space to write ciphertext block.");
   }
-  let x0 = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24) ^ sKey[0];
-  let x1 = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24) ^ sKey[1];
-  let x2 = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24) ^ sKey[2];
-  let x3 = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24) ^ sKey[3];
+  s[1064] = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24);
+  s[1065] = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24);
+  s[1066] = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24);
+  s[1067] = (plain[io++] | plain[io++] << 8 | plain[io++] << 16 | plain[io++] << 24);
+
+  s[1064] = s[1064] ^ s[1024];
+  s[1065] = s[1065] ^ s[1025];
+  s[1066] = s[1066] ^ s[1026];
+  s[1067] = s[1067] ^ s[1027];
 
   let t0: number;
   let t1: number;
-  let k = ROUND_SUBKEYS;
+  let k = ROUND_SUBKEYS + 1024;
   for (let R = 0; R < ROUNDS; R += 2) {
-    t0 = sBox[x0 << 1 & 0x1FE] ^
-         sBox[(x0 >>> 7 & 0x1FE) + 1] ^
-         sBox[0x200 + (x0 >>> 15 & 0x1FE)] ^
-         sBox[0x200 + (x0 >>> 23 & 0x1FE) + 1];
-    t1 = sBox[x1 >>> 23 & 0x1FE] ^
-         sBox[(x1 << 1 & 0x1FE) + 1] ^
-         sBox[0x200 + (x1 >>> 7 & 0x1FE)] ^
-         sBox[0x200 + (x1 >>> 15 & 0x1FE) + 1];
+    t0 = s[s[1064] << 1 & 0x1FE] ^
+         s[(s[1064] >>> 7 & 0x1FE) + 1] ^
+         s[0x200 + (s[1064] >>> 15 & 0x1FE)] ^
+         s[0x200 + (s[1064] >>> 23 & 0x1FE) + 1];
+    t1 = s[s[1065] >>> 23 & 0x1FE] ^
+         s[(s[1065] << 1 & 0x1FE) + 1] ^
+         s[0x200 + (s[1065] >>> 7 & 0x1FE)] ^
+         s[0x200 + (s[1065] >>> 15 & 0x1FE) + 1];
     
-    x2 ^= t0 + t1 + sKey[k++];
-    x2 = x2 >>> 1 | x2 << 31;
-    x3 = x3 << 1 | x3 >>> 31;
-    x3 ^= t0 + 2 * t1 + sKey[k++];
+    s[1066] ^= t0 + t1 + s[k++];
+    s[1066] = s[1066] >>> 1 | s[1066] << 31;
+    s[1067] = s[1067] << 1 | s[1067] >>> 31;
+    s[1067] ^= t0 + 2 * t1 + s[k++];
 
-    t0 = sBox[x2 << 1 & 0x1FE] ^
-         sBox[(x2 >>> 7 & 0x1FE) + 1] ^
-         sBox[0x200 + (x2 >>> 15 & 0x1FE)] ^
-         sBox[0x200 + (x2 >>> 23 & 0x1FE) + 1];
-    t1 = sBox[x3 >>> 23 & 0x1FE] ^
-         sBox[(x3 << 1 & 0x1FE) + 1] ^
-         sBox[0x200 + (x3 >>> 7 & 0x1FE)] ^
-         sBox[0x200 + (x3 >>> 15 & 0x1FE) + 1];
+    t0 = s[s[1066] << 1 & 0x1FE] ^
+         s[(s[1066] >>> 7 & 0x1FE) + 1] ^
+         s[0x200 + (s[1066] >>> 15 & 0x1FE)] ^
+         s[0x200 + (s[1066] >>> 23 & 0x1FE) + 1];
+    t1 = s[s[1067] >>> 23 & 0x1FE] ^
+         s[(s[1067] << 1 & 0x1FE) + 1] ^
+         s[0x200 + (s[1067] >>> 7 & 0x1FE)] ^
+         s[0x200 + (s[1067] >>> 15 & 0x1FE) + 1];
 
-    x0 ^= t0 + t1 + sKey[k++];
-    x0 = x0 >>> 1 | x0 << 31;
-    x1 = x1 << 1 | x1 >>> 31;
-    x1 ^= t0 + 2 * t1 + sKey[k++];
+    s[1064] ^= t0 + t1 + s[k++];
+    s[1064] = s[1064] >>> 1 | s[1064] << 31;
+    s[1065] = s[1065] << 1 | s[1065] >>> 31;
+    s[1065] ^= t0 + 2 * t1 + s[k++];
   }
 
-  outputBlock(
-    cipher, oo,
-    x2 ^ sKey[4],
-    x3 ^ sKey[5],
-    x0 ^ sKey[6],
-    x1 ^ sKey[7],
-  );
+  s[1066] = s[1066] ^ s[1028];
+  s[1067] = s[1067] ^ s[1029];
+  s[1064] = s[1064] ^ s[1030];
+  s[1065] = s[1065] ^ s[1031];
+
+  outputBlock(cipher, oo, s[1066], s[1067], s[1064], s[1065]);
 }
 
-export function decrypt(cipher: Uint8Array, io: number, plain: Uint8Array, oo: number, [sBox, sKey]: Session) {
+export function decrypt(cipher: Uint8Array, io: number, plain: Uint8Array, oo: number, s: Session) {
   if (cipher.length < io+16) {
     throw new Error("Incomplete ciphertext block.");
   }
   if (plain.length < oo+16) {
     throw new Error("Insufficient space to write plaintext block.");
   }
-  let x2 = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24) ^ sKey[4];
-  let x3 = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24) ^ sKey[5];
-  let x0 = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24) ^ sKey[6];
-  let x1 = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24) ^ sKey[7];
+  s[1066] = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24);
+  s[1067] = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24);
+  s[1064] = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24);
+  s[1065] = (cipher[io++] | cipher[io++] << 8 | cipher[io++] << 16 | cipher[io++] << 24);
+
+  s[1066] = s[1066] ^ s[1028];
+  s[1067] = s[1067] ^ s[1029];
+  s[1064] = s[1064] ^ s[1030];
+  s[1065] = s[1065] ^ s[1031];
 
   let t0: number;
   let t1: number;
-  let k = ROUND_SUBKEYS + 2 * ROUNDS - 1;  
+  let k = ROUND_SUBKEYS + 1024 + 2 * ROUNDS - 1;  
   for (let R = 0; R < ROUNDS; R += 2) {
-    t0 = sBox[x2 << 1 & 0x1FE] ^
-         sBox[(x2 >>> 7 & 0x1FE) + 1] ^
-         sBox[0x200 + (x2 >>> 15 & 0x1FE)] ^
-         sBox[0x200 + (x2 >>> 23 & 0x1FE) + 1];
-    t1 = sBox[x3 >>> 23 & 0x1FE] ^
-         sBox[(x3 << 1 & 0x1FE) + 1] ^
-         sBox[0x200 + (x3 >>> 7 & 0x1FE)] ^
-         sBox[0x200 + (x3 >>> 15 & 0x1FE) + 1];
+    t0 = s[s[1066] << 1 & 0x1FE] ^
+         s[(s[1066] >>> 7 & 0x1FE) + 1] ^
+         s[0x200 + (s[1066] >>> 15 & 0x1FE)] ^
+         s[0x200 + (s[1066] >>> 23 & 0x1FE) + 1];
+    t1 = s[s[1067] >>> 23 & 0x1FE] ^
+         s[(s[1067] << 1 & 0x1FE) + 1] ^
+         s[0x200 + (s[1067] >>> 7 & 0x1FE)] ^
+         s[0x200 + (s[1067] >>> 15 & 0x1FE) + 1];
     
-    x1 ^= t0 + 2 * t1 + sKey[k--];
-    x1 = x1 >>> 1 | x1 << 31;
-    x0 = x0 << 1 | x0 >>> 31;
-    x0 ^= t0 + t1 + sKey[k--];
+    s[1065] ^= t0 + 2 * t1 + s[k--];
+    s[1065] = s[1065] >>> 1 | s[1065] << 31;
+    s[1064] = s[1064] << 1 | s[1064] >>> 31;
+    s[1064] ^= t0 + t1 + s[k--];
 
-    t0 = sBox[x0 << 1 & 0x1FE] ^
-         sBox[(x0 >>> 7 & 0x1FE) + 1] ^
-         sBox[0x200 + (x0 >>> 15 & 0x1FE)] ^
-         sBox[0x200 + (x0 >>> 23 & 0x1FE) + 1];
-    t1 = sBox[x1 >>> 23 & 0x1FE] ^
-         sBox[(x1 << 1 & 0x1FE) + 1] ^
-         sBox[0x200 + (x1 >>> 7 & 0x1FE)] ^
-         sBox[0x200 + (x1 >>> 15 & 0x1FE) + 1];
+    t0 = s[s[1064] << 1 & 0x1FE] ^
+         s[(s[1064] >>> 7 & 0x1FE) + 1] ^
+         s[0x200 + (s[1064] >>> 15 & 0x1FE)] ^
+         s[0x200 + (s[1064] >>> 23 & 0x1FE) + 1];
+    t1 = s[s[1065] >>> 23 & 0x1FE] ^
+         s[(s[1065] << 1 & 0x1FE) + 1] ^
+         s[0x200 + (s[1065] >>> 7 & 0x1FE)] ^
+         s[0x200 + (s[1065] >>> 15 & 0x1FE) + 1];
 
-    x3 ^= t0 + 2 * t1 + sKey[k--];
-    x3 = x3 >>> 1 | x3 << 31;
-    x2 = x2 << 1 | x2 >>> 31;
-    x2 ^= t0 + t1 + sKey[k--];
+    s[1067] ^= t0 + 2 * t1 + s[k--];
+    s[1067] = s[1067] >>> 1 | s[1067] << 31;
+    s[1066] = s[1066] << 1 | s[1066] >>> 31;
+    s[1066] ^= t0 + t1 + s[k--];
   }
 
-  outputBlock(
-    plain, oo,
-    x0 ^ sKey[0],
-    x1 ^ sKey[1],
-    x2 ^ sKey[2],
-    x3 ^ sKey[3],
-  );
+  s[1064] = s[1064] ^ s[1024];
+  s[1065] = s[1065] ^ s[1025];
+  s[1066] = s[1066] ^ s[1026];
+  s[1067] = s[1067] ^ s[1027];
+
+  outputBlock(plain, oo, s[1064], s[1065], s[1066], s[1067]);
 }
